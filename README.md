@@ -1,11 +1,23 @@
 # Image → 3D Print
 
-Upload an image and get print-ready multi-colour files for a **Bambu Lab P2S**:
+Upload an image and get print-ready multi-colour files for **almost any FDM printer**:
 
-- **Bambu 3MF**: one object with one part per colour. Each part is pre-assigned to its filament slot,
-  and the filament colours, the P2S printer, the 0.20 mm Standard process, PLA Basic and the flush
-  volumes are all set in the project. Open it in Bambu Studio and slice.
+- **Project 3MF for your printer's slicer**: one object with one part per colour. Each part is
+  pre-assigned to its filament/extruder, and the printer, a 0.20 mm process, PLA and the filament
+  colours are all set in the project. Open it and slice.
+  - **Bambu Studio**: A1 mini, A1, P1P, P1S, P2S, X1 Carbon, X1E, H2S, H2D
+  - **PrusaSlicer**: MK4S, CORE One, XL (1/2/5 toolheads), MK3.5, MK3S+, MINI+, with and without MMU3
+  - **OrcaSlicer**: Creality K1C/K1 Max (CFS), K2 Plus, Hi, Ender-3 V3/KE/SE/S1/V2, Elegoo Centauri
+    Carbon 1/2, Neptune 4 Pro, Anycubic Kobra S1/3/2 Neo, Snapmaker U1, Flashforge AD5X,
+    Qidi X-Plus 4/Q1 Pro, Sovol SV08/SV06, Voron 2.4/Trident
+- **Universal 3MF** for any other printer: no printer settings inside, you pick the printer in the
+  slicer. PrusaSlicer keeps each part on its extruder; other slicers import it as plain geometry
+  (use the per-colour STLs there, or pick a listed printer for Bambu Studio / OrcaSlicer).
 - **STL** of the whole model, plus a **zip with one STL per colour**.
+
+**Single-nozzle printers** (no AMS/MMU/CFS…) print in colour with **Layer swaps**: every colour is its
+own band of layers, and the 3MF carries a pause (Bambu) or colour change (M600) at each band, so the
+slicer stops for each filament swap. The app lists the swaps (layer, height, colour).
 
 Everything prints **without supports**: parts are vertical extrusions standing on the plate or on the base.
 
@@ -43,7 +55,11 @@ cd app && ../.venv/bin/uvicorn main:app --reload
      with the other colours raised on top. They can have equal heights or be stepped. Colour changes
      happen only in the raised layers.
    - *Flat mosaic*: every colour is a full-thickness tile. Good for coasters and signs.
-7. **Export**: binary STL writer, and a Bambu Studio 3MF writer (`app/pipeline/export.py`).
+   - *Layer swaps*: the base, then one band of layers per colour. Band *k* covers every region that is
+     raised *k* or more bands, so each region's top shows its own colour, and every layer has a single
+     colour. Heights snap to the printer's layer grid so the swaps land exactly between bands.
+7. **Export** (`app/pipeline/export.py`): binary STL, Bambu Studio / OrcaSlicer project 3MF,
+   PrusaSlicer 3MF (with its project config for Prusa printers, without one for the universal file).
 
 ## Palette editing
 
@@ -53,19 +69,31 @@ cd app && ../.venv/bin/uvicorn main:app --reload
 - **Snap to Bambu PLA** swaps each colour for the closest distinct Bambu PLA Basic filament.
 - Names you give the colours become the part names in Bambu Studio.
 
-## P2S project template
+## Printer profiles
 
-`app/pipeline/p2s_project_settings.json` is the complete project config Bambu Studio expects. It is
-built from the installed Bambu Studio's system presets:
+`app/pipeline/printers/` holds the catalogue (`catalog.json`) and one gzipped project config per
+printer. `tools/build_printers.py` builds them from the slicers' own system presets:
+
+- Bambu Studio / OrcaSlicer: the machine preset, a 0.20 mm process and a PLA preset (with their
+  `inherits` chains resolved) are loaded through the slicer CLI, which exports the project config.
+  A second export with two filaments shows which settings repeat per filament.
+- PrusaSlicer: its CLI doesn't apply printer presets, so the PrusaResearch bundle is resolved on top
+  of PrusaSlicer's defaults.
 
 ```bash
-# export any STL to 3MF with the P2S presets via the Bambu Studio CLI, then:
-.venv/bin/python tools/build_p2s_template.py <exported>/Metadata/project_settings.config
+.venv/bin/python tools/build_printers.py            # all printers in its CATALOG list
+.venv/bin/python tools/build_printers.py --only bambu-p2s,prusa-xl-5t
 ```
+
+Adding a printer = one line in `CATALOG` (id, brand, name, slicer, machine preset, colour slots, system).
+Slicer apps default to `/Applications/<Name>.app`; override with `BAMBU_STUDIO`, `ORCA_SLICER`, `PRUSA_SLICER`.
 
 ## Tests
 
 ```bash
 .venv/bin/python tests/make_sample.py /tmp/sample.png
 .venv/bin/python tests/test_pipeline.py /tmp/sample.png /tmp/out   # prints watertightness per part
+# slice the generated 3MFs with the real slicers (tool changes / filament swaps in the G-code)
+.venv/bin/python tests/slice_check.py /tmp/sample.png /tmp/sc bambu-p2s prusa-xl-5t creality-k2plus
+.venv/bin/python tests/slice_check.py /tmp/sample.png /tmp/sc prusa-mk4s creality-ender3v3 --mode layers
 ```

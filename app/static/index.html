@@ -14,7 +14,7 @@
 </head>
 <body>
 <header class="topbar">
-  <div class="brand"><span class="logo">◆</span> Image&nbsp;→&nbsp;3D&nbsp;Print <span class="tag">Bambu Lab P2S</span></div>
+  <div class="brand"><span class="logo">◆</span> Image&nbsp;→&nbsp;3D&nbsp;Print <span class="tag" id="printerTag"></span></div>
   <div class="status" id="status">Upload an image to start</div>
 </header>
 
@@ -30,9 +30,27 @@
       </label>
     </section>
 
+    <!-- Printer -->
+    <section class="card">
+      <h2>2. Printer</h2>
+      <div class="field">
+        <select id="printer"></select>
+        <small class="hint" id="printerInfo"></small>
+      </div>
+      <div class="grid2" id="genericFields" hidden>
+        <div class="field"><label for="bed_w">Bed width (mm)</label><input type="number" id="bed_w" value="220" min="50" max="1000" step="1"></div>
+        <div class="field"><label for="bed_d">Bed depth (mm)</label><input type="number" id="bed_d" value="220" min="50" max="1000" step="1"></div>
+        <div class="field"><label for="slots">Filament slots</label>
+          <select id="slots">
+            <option value="1">1 (single nozzle)</option><option value="2">2</option><option value="4">4</option>
+            <option value="5">5</option><option value="8">8</option><option value="16">16</option>
+          </select></div>
+      </div>
+    </section>
+
     <!-- Colours -->
     <section class="card">
-      <h2>2. Colours</h2>
+      <h2>3. Colours</h2>
       <div class="field">
         <label for="n_colors">Number of colours <output id="n_colors_out">4</output></label>
         <input type="range" id="n_colors" min="1" max="16" value="4">
@@ -63,10 +81,11 @@
 
     <!-- Geometry -->
     <section class="card">
-      <h2>3. Shape</h2>
+      <h2>4. Shape</h2>
       <div class="seg" id="modeSeg">
         <button data-mode="relief" class="on">Raised relief</button>
         <button data-mode="flat">Flat mosaic</button>
+        <button data-mode="layers">Layer swaps</button>
       </div>
       <small class="hint" id="modeHint"></small>
       <div class="grid2">
@@ -86,11 +105,11 @@
             <option value="3">Extra smooth</option>
           </select></div>
         <div class="field"><label for="base_thickness" id="baseLabel">Base (mm)</label><input type="number" id="base_thickness" value="1.2" min="0.4" max="20" step="0.2"></div>
-        <div class="field relief-only"><label for="relief_height">Raised (mm)</label><input type="number" id="relief_height" value="0.8" min="0.2" max="20" step="0.2"></div>
+        <div class="field raised-only"><label for="relief_height">Raised (mm)</label><input type="number" id="relief_height" value="0.8" min="0.2" max="20" step="0.2"></div>
       </div>
       <div class="relief-only">
-        <label class="check"><input type="checkbox" id="stepped"> Stepped heights (each colour higher)</label>
-        <div class="field" id="stepField" hidden><label for="step_height">Step (mm)</label><input type="number" id="step_height" value="0.4" min="0.08" max="5" step="0.04"></div>
+        <label class="check raised-only"><input type="checkbox" id="stepped"> Stepped heights (each colour higher)</label>
+        <div class="field" id="stepField" hidden><label for="step_height" id="stepLabel">Step (mm)</label><input type="number" id="step_height" value="0.4" min="0.08" max="5" step="0.04"></div>
         <div class="field">
           <label for="baseColor">Base colour</label>
           <select id="baseColor"><option value="-1">Most used colour</option><option value="custom">Extra filament…</option></select>
@@ -125,10 +144,12 @@
       <div class="stats" id="stats"></div>
       <div class="warnings" id="warnings"></div>
       <div class="downloads">
-        <a class="btn primary" id="dl3mf" download>⬇ Bambu 3MF (P2S, coloured)</a>
+        <a class="btn primary" id="dl3mf" download>⬇ 3MF</a>
+        <a class="btn" id="dlUni" download title="Printer-neutral 3MF without printer settings. PrusaSlicer keeps each part on its extruder; other slicers import it as plain geometry">⬇ Universal 3MF</a>
         <a class="btn" id="dlStl" download>⬇ STL (single)</a>
         <a class="btn" id="dlZip" download>⬇ STL per colour (.zip)</a>
       </div>
+      <div class="swaps" id="swaps" hidden></div>
       <table class="parts">
         <thead><tr><th></th><th>Part</th><th>Filament</th><th>Height</th><th>Triangles</th><th></th></tr></thead>
         <tbody id="partsBody"></tbody>

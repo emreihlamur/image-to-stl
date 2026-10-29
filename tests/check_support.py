@@ -13,4 +13,8 @@ for border in [0, 2]:
         parts = build_parts(q, hexes, [""] * 5, ModelSettings(mode="relief", edge_smoothing=lvl, border_mm=border))
         base = cap(parts[0], parts[0].z1)
         unsupported = sum(cap(p, p.z0).difference(base).area for p in parts[1:])
-        print(f"border={border} level={lvl} unsupported area={unsupported:.6f} mm2")
+        print(f"relief border={border} level={lvl} unsupported area={unsupported:.6f} mm2")
+        # layer swaps: every band stands on the band below it
+        parts = build_parts(q, hexes, [""] * 5, ModelSettings(mode="layers", edge_smoothing=lvl, border_mm=border))
+        unsupported = sum(cap(b, b.z0).difference(cap(a, a.z1)).area for a, b in zip(parts, parts[1:]))
+        print(f"layers border={border} level={lvl} unsupported area={unsupported:.6f} mm2")

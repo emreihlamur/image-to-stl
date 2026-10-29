@@ -10,6 +10,8 @@ const state = {
                        // pixels map to `src`, the part is printed in filament colour `hex`
   names: null,         // custom names for the auto palette
   result: null,
+  printers: [],
+  printer: null,       // selected printer (catalogue entry, or the "generic" pseudo entry)
   busy: false,
   pending: false,
 };
@@ -60,18 +62,30 @@ ranges.forEach((id) => {
   el.addEventListener("input", () => { out.textContent = el.value; if (id === "n_colors") amsHint(); });
 });
 function amsHint() {
-  const n = +$("n_colors").value + ($("baseColor").value === "custom" && state.mode === "relief" ? 1 : 0);
   const h = $("amsHint");
-  h.textContent = n <= 4 ? "Fits one 4-slot AMS" : n <= 8 ? `${n} filaments: needs 2 AMS units` :
-    `${n} filaments: needs ${Math.ceil(n / 4)} AMS units or manual swaps`;
-  h.classList.toggle("warn", n > 4);
+  const p = state.printer;
+  if (!p) return;
+  const n = state.result ? state.result.palette.length : +$("n_colors").value;
+  if (state.mode === "layers") {
+    h.textContent = `One filament at a time: ${Math.max(n - 1, 0)} filament change${n === 2 ? "" : "s"} during the print`;
+    h.classList.remove("warn");
+    return;
+  }
+  const total = n + ($("baseColor").value === "custom" && state.mode === "relief" ? 1 : 0);
+  const sys = p.system || "filament changer";
+  if (total <= 1) h.textContent = "Single colour";
+  else if (total <= p.slots) h.textContent = `${total} filaments: fits the ${sys} (${p.slots} slots)`;
+  else if (p.slots > 1) h.textContent = `${total} filaments: more than the ${sys} holds (${p.slots}). Use fewer colours or Layer swaps`;
+  else h.textContent = `${total} filaments, but this printer has no filament changer. Use Layer swaps`;
+  h.classList.toggle("warn", total > p.slots);
 }
 
 $("n_colors").addEventListener("change", () => { state.customPalette = null; state.names = null; autoGen(); });
 ["smoothing", "min_region_mm2", "bg_tolerance", "width_mm", "pixel_mm", "base_thickness",
- "relief_height", "step_height", "border_mm", "edge_smoothing"].forEach((id) => $(id).addEventListener("change", autoGen));
+ "relief_height", "step_height", "border_mm", "edge_smoothing", "bed_w", "bed_d", "slots"].forEach((id) => $(id).addEventListener("change", autoGen));
+$("slots").addEventListener("change", () => { state.printer.slots = +$("slots").value; amsHint(); });
 $("remove_bg").addEventListener("change", () => { $("bgTolField").hidden = !$("remove_bg").checked; autoGen(); });
-$("stepped").addEventListener("change", () => { $("stepField").hidden = !$("stepped").checked; autoGen(); });
+$("stepped").addEventListener("change", () => { applyMode(); autoGen(); });
 $("baseColor").addEventListener("change", () => { $("baseCustom").hidden = $("baseColor").value !== "custom"; amsHint(); autoGen(); });
 $("baseCustom").addEventListener("change", autoGen);
 $("generate").addEventListener("click", generate);
@@ -79,6 +93,7 @@ $("generate").addEventListener("click", generate);
 const MODE_HINTS = {
   relief: "A backing plate in one colour with the other colours raised on top. Colour changes only happen in the raised layers, so it prints fast with little purge waste.",
   flat: "Every colour is a full-thickness tile of the same height: a flat, two-sided mosaic (coasters, signs). Colour changes on every layer.",
+  layers: "For printers without a filament changer: each colour is its own band of layers, stacked like a relief, and the print pauses at each band so you can swap the filament. Every region shows its colour on top.",
 };
 document.querySelectorAll("#modeSeg button").forEach((b) => b.addEventListener("click", () => {
   document.querySelectorAll("#modeSeg button").forEach((x) => x.classList.toggle("on", x === b));
@@ -87,12 +102,66 @@ document.querySelectorAll("#modeSeg button").forEach((b) => b.addEventListener("
   autoGen();
 }));
 function applyMode() {
-  document.querySelectorAll(".relief-only").forEach((el) => (el.style.display = state.mode === "relief" ? "" : "none"));
-  $("baseLabel").textContent = state.mode === "relief" ? "Base (mm)" : "Thickness (mm)";
+  const m = state.mode;
+  document.querySelectorAll(".relief-only").forEach((el) => (el.style.display = m === "flat" ? "none" : ""));
+  document.querySelectorAll(".raised-only").forEach((el) => (el.style.display = m === "relief" ? "" : "none"));
+  $("stepField").hidden = !(m === "layers" || (m === "relief" && $("stepped").checked));
+  $("stepLabel").textContent = m === "layers" ? "Band per colour (mm)" : "Step (mm)";
+  $("baseLabel").textContent = m === "flat" ? "Thickness (mm)" : "Base (mm)";
   $("modeHint").textContent = MODE_HINTS[state.mode];
   amsHint();
 }
 applyMode();
+
+// ---------- printer ----------
+const GENERIC = { id: "generic", label: "Other printer", name: "Other printer", brand: "", slicer: "generic",
+                  slicer_name: "any slicer", slots: 1, system: "", bed: [220, 220] };
+function storage(key, value) {
+  try { if (value === undefined) return localStorage.getItem(key); localStorage.setItem(key, value); } catch { return null; }
+}
+async function loadPrinters() {
+  try { state.printers = await (await fetch("/api/printers")).json(); } catch { state.printers = []; }
+  const groups = {};
+  state.printers.forEach((p) => (groups[p.brand] ||= []).push(p));
+  $("printer").innerHTML = Object.entries(groups).map(([brand, list]) =>
+    `<optgroup label="${escapeHtml(brand)}">${list.map((p) =>
+      `<option value="${p.id}">${escapeHtml(p.label)}</option>`).join("")}</optgroup>`).join("") +
+    `<optgroup label="Other"><option value="generic">Other printer (universal 3MF)…</option></optgroup>`;
+  const saved = storage("printer");
+  $("printer").value = [...$("printer").options].some((o) => o.value === saved) ? saved : "bambu-p2s";
+  selectPrinter(false);
+}
+function selectPrinter(regen = true) {
+  const id = $("printer").value;
+  const p = id === "generic"
+    ? { ...GENERIC, slots: +$("slots").value, bed: [+$("bed_w").value, +$("bed_d").value] }
+    : state.printers.find((x) => x.id === id) || GENERIC;
+  const prevSlots = state.printer ? state.printer.slots : null;
+  state.printer = p;
+  storage("printer", id);
+  $("genericFields").hidden = id !== "generic";
+  $("printerTag").textContent = p.id === "generic" ? "any printer" : p.label;
+  const changer = p.slots > 1 ? `${p.system} · ${p.slots} colours automatic` : "single nozzle · colours by filament swaps";
+  $("printerInfo").textContent = p.id === "generic"
+    ? "Universal 3MF: choose your printer in the slicer. PrusaSlicer keeps each colour on its extruder; elsewhere use the per-colour STLs."
+    : `${p.bed[0]} × ${p.bed[1]} mm · ${changer} · ${p.slicer_name} project`;
+  $("width_mm").max = Math.max(...p.bed);
+  setPlate(p.bed[0], p.bed[1]);
+  // single-nozzle printers default to filament swaps, changers to the raised relief
+  if (prevSlots === null || (prevSlots > 1) !== (p.slots > 1)) setMode(p.slots > 1 ? "relief" : "layers");
+  amsHint();
+  if (regen) autoGen();
+}
+$("printer").addEventListener("change", () => selectPrinter());
+["bed_w", "bed_d"].forEach((id) => $(id).addEventListener("change", () => {
+  state.printer.bed = [+$("bed_w").value, +$("bed_d").value];
+  setPlate(...state.printer.bed);
+}));
+function setMode(mode) {
+  state.mode = mode;
+  document.querySelectorAll("#modeSeg button").forEach((x) => x.classList.toggle("on", x.dataset.mode === mode));
+  applyMode();
+}
 
 function autoGen() { if ($("auto").checked && state.jobId) generate(); }
 
@@ -179,6 +248,10 @@ async function generate(opts = {}) {
     fd.append("names", JSON.stringify(state.names));
   }
   if (opts.snap) fd.append("snap_filaments", "true");
+  fd.append("printer", state.printer ? state.printer.id : "bambu-p2s");
+  fd.append("bed_w", val("bed_w"));
+  fd.append("bed_d", val("bed_d"));
+  fd.append("slots", val("slots"));
 
   try {
     const res = await fetch(`/api/generate/${state.jobId}`, { method: "POST", body: fd });
@@ -204,6 +277,7 @@ function fileUrl(path) {
 
 function showResult(r) {
   renderPalette(r.palette);
+  amsHint();
   $("mapImg").src = fileUrl(r.files.preview);
   $("results").hidden = false;
   const [w, h, z] = r.size_mm;
@@ -214,7 +288,20 @@ function showResult(r) {
     `Grid <b>${r.grid_px[0]} × ${r.grid_px[1]} px</b>`,
   ].map((s) => `<span>${s}</span>`).join("");
   $("warnings").innerHTML = r.warnings.map((w) => `<div>⚠ ${w}</div>`).join("");
-  $("dl3mf").href = `/api/jobs/${state.jobId}/files/${r.files["3mf"]}`;
+  const pr = r.printer;
+  $("dl3mf").hidden = !r.files["3mf"];
+  if (r.files["3mf"]) {
+    $("dl3mf").href = `/api/jobs/${state.jobId}/files/${r.files["3mf"]}`;
+    $("dl3mf").textContent = `⬇ ${pr.slicer_name} 3MF (${pr.label})`;
+  }
+  $("dlUni").href = `/api/jobs/${state.jobId}/files/${r.files.universal}`;
+  $("dlUni").classList.toggle("primary", !r.files["3mf"]);
+  $("swaps").hidden = !r.swaps.length;
+  $("swaps").innerHTML = r.swaps.length ? `<b>Filament changes</b> · start with
+    <span class="dot" style="background:${r.filaments[0].hex}"></span>${escapeHtml(r.filaments[0].name)}.
+    The 3MF already holds these pauses; your slicer shows them on the layer slider.
+    <ol>${r.swaps.map((s) => `<li>Layer ${s.layer} (Z ${s.z.toFixed(2)} mm): load
+    <span class="dot" style="background:${s.hex}"></span>${escapeHtml(s.name)} <code>${s.hex}</code></li>`).join("")}</ol>` : "";
   $("dlStl").href = `/api/jobs/${state.jobId}/files/${r.files.stl}`;
   $("dlZip").href = `/api/jobs/${state.jobId}/files/${r.files.zip}`;
   $("partsBody").innerHTML = r.parts.map((p) => `
@@ -257,16 +344,22 @@ const fill = new THREE.DirectionalLight(0xffffff, 0.5);
 fill.position.set(160, 120, 80);
 scene.add(fill);
 
-// P2S build plate 256 x 256
+// build plate of the selected printer, centred on the origin like the model
 const plate = new THREE.Group();
-const plateMesh = new THREE.Mesh(new THREE.PlaneGeometry(256, 256),
-  new THREE.MeshStandardMaterial({ color: 0x23272f, roughness: 0.9 }));
-plateMesh.position.z = -0.05;
-plate.add(plateMesh);
-const grid = new THREE.GridHelper(256, 16, 0x3a404c, 0x2c313b);
-grid.rotation.x = Math.PI / 2;
-plate.add(grid);
 scene.add(plate);
+function setPlate(w, d) {
+  plate.children.forEach((c) => { c.geometry.dispose(); c.material.dispose(); });
+  plate.clear();
+  const plateMesh = new THREE.Mesh(new THREE.PlaneGeometry(w, d),
+    new THREE.MeshStandardMaterial({ color: 0x23272f, roughness: 0.9 }));
+  plateMesh.position.z = -0.05;
+  plate.add(plateMesh);
+  const cells = Math.max(Math.round(Math.max(w, d) / 16), 1);
+  const grid = new THREE.GridHelper(Math.max(w, d), cells, 0x3a404c, 0x2c313b);
+  grid.rotation.x = Math.PI / 2;
+  grid.scale.set(w / Math.max(w, d), 1, d / Math.max(w, d));
+  plate.add(grid);
+}
 
 const modelGroup = new THREE.Group();
 scene.add(modelGroup);
@@ -318,3 +411,4 @@ function resize() {
 }
 new ResizeObserver(resize).observe($("view3d"));
 renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+loadPrinters();
