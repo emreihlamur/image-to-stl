@@ -154,6 +154,33 @@ def remove_small_regions(labels: np.ndarray, min_px: int, max_passes: int = 4) -
     return labels
 
 
+def remove_thin(labels: np.ndarray, min_width_px: int) -> np.ndarray:
+    """Remove features narrower than min_width_px (e.g. anti-aliasing slivers along edges, lines
+    thinner than the nozzle): each label is morphologically opened, and pixels that no label
+    keeps are given to the nearest kept label."""
+    if min_width_px < 2:
+        return labels
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (min_width_px, min_width_px))
+    kept = np.zeros(labels.shape, bool)
+    for lab in np.unique(labels):
+        if lab == NO_LABEL:
+            continue
+        m = (labels == lab).astype(np.uint8)
+        kept |= cv2.morphologyEx(m, cv2.MORPH_OPEN, kernel).astype(bool)
+    kept |= labels == NO_LABEL  # background is never removed here
+    if kept.all():
+        return labels
+    # nearest kept pixel for every orphan
+    _, nearest = cv2.distanceTransformWithLabels((~kept).astype(np.uint8), cv2.DIST_L2, 5,
+                                                 labelType=cv2.DIST_LABEL_PIXEL)
+    ys, xs = np.nonzero(kept)
+    lut = np.empty(nearest.max() + 1, np.int64)
+    lut[nearest[ys, xs]] = labels[ys, xs]
+    out = labels.copy()
+    out[~kept] = lut[nearest[~kept]]
+    return out
+
+
 def remove_pinches(labels: np.ndarray, max_iter: int = 50) -> np.ndarray:
     """Remove 2x2 checkerboard patterns where a colour touches itself only diagonally.
 
@@ -208,6 +235,7 @@ def snap_to_filaments(palette: np.ndarray) -> list[tuple[str, str]]:
 
 def quantize(data: bytes, *, width_mm: float, pixel_mm: float, n_colors: int,
              remove_bg: bool, bg_tolerance: float, smoothing: int, min_region_mm2: float,
+             min_width_mm: float = 0.45,
              custom_palette: list[str] | None = None) -> Quantized:
     rgb, mask = load_image(data, width_mm, pixel_mm)
     if remove_bg:
@@ -223,6 +251,7 @@ def quantize(data: bytes, *, width_mm: float, pixel_mm: float, n_colors: int,
         palette = kmeans_palette(rgb, mask, n_colors)
     labels = assign_labels(rgb, mask, palette)
     labels = majority_smooth(labels, len(palette), smoothing)
+    labels = remove_thin(labels, int(np.ceil(min_width_mm / pixel_mm - 1e-6)))
     labels = remove_small_regions(labels, int(round(min_region_mm2 / (pixel_mm ** 2))))
     labels = remove_pinches(labels)
     if custom_palette:  # keep the user's order and colours exactly

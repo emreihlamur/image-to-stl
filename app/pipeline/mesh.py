@@ -1,8 +1,9 @@
 """Turn label masks into watertight extruded meshes.
 
-Each colour region's outline is traced along exact pixel edges, so neighbouring parts share
-their walls perfectly (no gaps, no overlaps). Straight runs are collapsed and the caps are
-triangulated with GEOS constrained Delaunay, which keeps the triangle count low compared to one quad per pixel.
+Each colour region's outline is traced along exact pixel edges, then (optionally) replaced by the
+shared smoothed outline from `outline.Outlines`, so neighbouring parts still meet exactly (no gaps,
+no overlaps). The caps are triangulated with GEOS constrained Delaunay, which keeps the triangle
+count low compared to one quad per pixel.
 """
 from __future__ import annotations
 
@@ -11,6 +12,8 @@ from dataclasses import dataclass, field
 import numpy as np
 import shapely
 from shapely.geometry import Point, Polygon
+
+from .outline import Outlines
 
 # Directions in model XY space.
 PX, PY, NX, NY = 0, 1, 2, 3
@@ -60,8 +63,8 @@ def _boundary_edges(mask: np.ndarray):
     return np.concatenate(starts), np.concatenate(ends), np.concatenate(dirs)
 
 
-def _trace_loops(mask: np.ndarray) -> list[np.ndarray]:
-    """Chain boundary edges into closed loops of corner ids (collinear points removed)."""
+def _trace_loops(mask: np.ndarray, collapse: bool = True) -> list[np.ndarray]:
+    """Chain boundary edges into closed loops of corner ids (collinear points removed if collapse)."""
     starts, ends, dirs = _boundary_edges(mask)
     out_edges: dict[int, list[int]] = {}
     for k, s in enumerate(starts.tolist()):
@@ -88,7 +91,7 @@ def _trace_loops(mask: np.ndarray) -> list[np.ndarray]:
             k = cands[0]
         # keep only corners where the direction changes
         n = len(loop_pts)
-        keep = [loop_pts[i] for i in range(n) if loop_dirs[i] != loop_dirs[i - 1]]
+        keep = [loop_pts[i] for i in range(n) if not collapse or loop_dirs[i] != loop_dirs[i - 1]]
         if len(keep) >= 3:
             loops.append(np.array(keep, np.int64))
     return loops
@@ -104,32 +107,53 @@ def _signed_area(xy: np.ndarray) -> float:
     return 0.5 * float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
 
 
-def mask_to_polygons(mask: np.ndarray) -> list[tuple[np.ndarray, list[np.ndarray]]]:
-    """Return [(outer_xy, [hole_xy, ...])] in pixel units; outer CCW, holes CW."""
+def _collapse(xy: np.ndarray) -> np.ndarray:
+    """Drop collinear points of an axis-aligned pixel loop."""
+    d = np.roll(xy, -1, axis=0) - xy
+    return xy[np.any(d != np.roll(d, 1, axis=0), axis=1)]
+
+
+def mask_to_polygons(mask: np.ndarray, outlines: Outlines | None = None
+                     ) -> list[tuple[np.ndarray, list[np.ndarray]]]:
+    """Return [(outer_xy, [hole_xy, ...])] in pixel units; outer CCW, holes CW.
+
+    With `outlines`, rings use the shared smoothed vertices; a polygon whose smoothed rings would
+    be invalid (rare, very thin features) falls back to its pixel-exact outline."""
     h, w = mask.shape
     outers, holes = [], []
-    for loop in _trace_loops(mask):
-        xy = _loop_xy(loop, h, w)
-        area = _signed_area(xy)
-        (outers if area > 0 else holes).append((xy, abs(area)))
-    shapes = [Polygon(xy) for xy, _ in outers]
-    result = [(xy, []) for xy, _ in outers]
-    for hxy, harea in holes:
-        pt = Polygon(hxy).representative_point()
+    for loop in _trace_loops(mask, collapse=outlines is None):
+        if outlines is None:
+            raw = smooth = _loop_xy(loop, h, w)
+        else:
+            smooth, raw = outlines.ring(loop)
+            raw = _collapse(raw)
+        area = _signed_area(raw)
+        (outers if area > 0 else holes).append((raw, smooth, abs(area)))
+    shapes = [Polygon(raw) for raw, _, _ in outers]
+    result = [(o, []) for o in outers]
+    for hole in holes:
+        pt = Polygon(hole[0]).representative_point()
         best, best_area = None, np.inf
-        for idx, ((_, oarea), shp) in enumerate(zip(outers, shapes)):
-            if harea < oarea < best_area and shp.contains(Point(pt.x, pt.y)):
+        for idx, ((_, _, oarea), shp) in enumerate(zip(outers, shapes)):
+            if hole[2] < oarea < best_area and shp.contains(Point(pt.x, pt.y)):
                 best, best_area = idx, oarea
         if best is not None:
-            result[best][1].append(hxy)
-    return result
+            result[best][1].append(hole)
+    polys = []
+    for outer, hs in result:
+        smooth = (outer[1], [hh[1] for hh in hs])
+        if outlines is not None and not Polygon(*smooth).is_valid:
+            polys.append((outer[0], [hh[0] for hh in hs]))
+        else:
+            polys.append(smooth)
+    return polys
 
 
 def extrude_polygon(outer: np.ndarray, holes: list[np.ndarray], z0: float, z1: float,
                     scale: float, offset: tuple[float, float]) -> Mesh:
     rings = [outer] + holes
     verts2d = np.concatenate(rings)
-    # Vertices are integer pixel corners, so triangle corners map back to ring indices exactly.
+    # GEOS returns the input coordinates unchanged, so triangle corners map back to ring indices.
     index = {pt: k for k, pt in enumerate(map(tuple, verts2d.tolist()))}
     cdt = shapely.get_parts(shapely.constrained_delaunay_triangles(Polygon(outer, holes)))
     if len(cdt) == 0:
@@ -157,9 +181,10 @@ def extrude_polygon(outer: np.ndarray, holes: list[np.ndarray], z0: float, z1: f
     return Mesh(vertices, np.concatenate(faces))
 
 
-def extrude_mask(mask: np.ndarray, z0: float, z1: float, pixel_mm: float) -> Mesh:
+def extrude_mask(mask: np.ndarray, z0: float, z1: float, pixel_mm: float,
+                 outlines: Outlines | None = None) -> Mesh:
     """Extrude a boolean mask between z0 and z1; model origin at the image's bottom-left."""
     if not mask.any() or z1 <= z0:
         return Mesh()
     return Mesh.concat([extrude_polygon(o, hs, z0, z1, pixel_mm, (0.0, 0.0))
-                        for o, hs in mask_to_polygons(mask)])
+                        for o, hs in mask_to_polygons(mask, outlines)])

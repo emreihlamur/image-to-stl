@@ -7,6 +7,7 @@ import numpy as np
 
 from .colors import NO_LABEL, Quantized, remove_pinches
 from .mesh import Mesh, extrude_mask
+from .outline import Outlines
 
 BED_MM = 256.0  # Bambu Lab P2S build plate (256 x 256 x 256 mm)
 
@@ -31,6 +32,7 @@ class ModelSettings:
     base_color_index: int = -1      # relief: palette index of the backing, -1 = most used colour
     base_color_custom: str | None = None  # relief: extra filament used only for the backing
     border_mm: float = 0.0          # extra backing rim around the shape (relief only)
+    edge_smoothing: int = 2         # 0 = pixel-exact outlines, 1..3 = increasingly smooth curves
 
 
 def _dilate(mask: np.ndarray, px: int) -> np.ndarray:
@@ -51,11 +53,17 @@ def build_parts(q: Quantized, colors: list[str], names: list[str], s: ModelSetti
         pad = int(round(s.border_mm / q.pixel_mm))
         footprint = _dilate(footprint, pad)
         labels = np.pad(labels, pad, constant_values=NO_LABEL)
+        labels = np.where(footprint & (labels == NO_LABEL), k, labels)  # border = pseudo colour k
+        labels = remove_pinches(labels)
+        footprint = labels != NO_LABEL
+
+    # one shared smoothed outline graph for every region, so all parts keep meeting exactly
+    outlines = Outlines(labels, s.edge_smoothing)
 
     parts: list[Part] = []
     if s.mode == "flat":
         for i in range(k):
-            m = extrude_mask(labels == i, 0.0, s.base_thickness, q.pixel_mm)
+            m = extrude_mask(labels == i, 0.0, s.base_thickness, q.pixel_mm, outlines)
             if len(m.faces):
                 parts.append(Part(names[i], colors[i], i + 1, m, 0.0, s.base_thickness))
         return parts
@@ -68,7 +76,7 @@ def build_parts(q: Quantized, colors: list[str], names: list[str], s: ModelSetti
         base_idx = int(counts.argmax()) if s.base_color_index < 0 else min(s.base_color_index, k - 1)
         base_name, base_color, base_slot = names[base_idx], colors[base_idx], base_idx + 1
 
-    base = extrude_mask(footprint, 0.0, s.base_thickness, q.pixel_mm)
+    base = extrude_mask(footprint, 0.0, s.base_thickness, q.pixel_mm, outlines)
     parts.append(Part(f"{base_name} (base)", base_color, base_slot, base, 0.0, s.base_thickness))
 
     # raised colours, stepped ones ordered by area (biggest lowest) so details stand on top
@@ -76,7 +84,7 @@ def build_parts(q: Quantized, colors: list[str], names: list[str], s: ModelSetti
     for step, i in enumerate(raised, start=1):
         h = s.step_height * step if s.stepped else s.relief_height
         z1 = s.base_thickness + h
-        m = extrude_mask(labels == i, s.base_thickness, z1, q.pixel_mm)
+        m = extrude_mask(labels == i, s.base_thickness, z1, q.pixel_mm, outlines)
         if len(m.faces):
             parts.append(Part(names[i], colors[i], i + 1, m, s.base_thickness, z1))
     return parts

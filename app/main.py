@@ -82,6 +82,7 @@ def generate(
     base_color_index: int = Form(-1),
     base_color_custom: str = Form(""),
     border_mm: float = Form(0.0),
+    edge_smoothing: int = Form(2),
     remove_bg: bool = Form(False),
     bg_tolerance: float = Form(12.0),
     smoothing: int = Form(1),
@@ -131,7 +132,7 @@ def generate(
         base_thickness=min(max(base_thickness, 0.4), 20), relief_height=min(max(relief_height, 0.2), 20),
         stepped=stepped, step_height=min(max(step_height, 0.08), 5),
         base_color_index=base_color_index, base_color_custom=base_color_custom or None,
-        border_mm=min(max(border_mm, 0), 20))
+        border_mm=min(max(border_mm, 0), 20), edge_smoothing=min(max(edge_smoothing, 0), 3))
     parts = build_parts(q, hexes, names_list, settings)
     if not parts:
         raise HTTPException(400, "No printable geometry produced")

@@ -69,7 +69,7 @@ function amsHint() {
 
 $("n_colors").addEventListener("change", () => { state.customPalette = null; state.names = null; autoGen(); });
 ["smoothing", "min_region_mm2", "bg_tolerance", "width_mm", "pixel_mm", "base_thickness",
- "relief_height", "step_height", "border_mm"].forEach((id) => $(id).addEventListener("change", autoGen));
+ "relief_height", "step_height", "border_mm", "edge_smoothing"].forEach((id) => $(id).addEventListener("change", autoGen));
 $("remove_bg").addEventListener("change", () => { $("bgTolField").hidden = !$("remove_bg").checked; autoGen(); });
 $("stepped").addEventListener("change", () => { $("stepField").hidden = !$("stepped").checked; autoGen(); });
 $("baseColor").addEventListener("change", () => { $("baseCustom").hidden = $("baseColor").value !== "custom"; amsHint(); autoGen(); });
@@ -166,6 +166,7 @@ async function generate(opts = {}) {
   fd.append("base_color_index", bc === "custom" ? -1 : bc);
   fd.append("base_color_custom", bc === "custom" ? val("baseCustom") : "");
   fd.append("border_mm", val("border_mm"));
+  fd.append("edge_smoothing", val("edge_smoothing"));
   fd.append("remove_bg", $("remove_bg").checked);
   fd.append("bg_tolerance", val("bg_tolerance"));
   fd.append("smoothing", val("smoothing"));

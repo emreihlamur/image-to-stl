@@ -28,17 +28,22 @@ cd app && ../.venv/bin/uvicorn main:app --reload
 2. **Background**: transparent pixels are dropped. Optionally, the region connected to the border
    that matches the border colour is removed too.
 3. **Quantise**: k-means in CIE Lab with N colours, followed by a mode filter (*Smoothing*),
-   merging of specks below a minimum area, and removal of diagonal-only pixel contacts (these would
-   otherwise become non-manifold edges).
-4. **Mesh**: each colour's outline is traced along exact pixel edges, collinear points are collapsed,
-   and the caps are triangulated with GEOS constrained Delaunay. Neighbouring parts share their walls
-   exactly, every part is watertight, and triangle counts stay low.
-5. **Shape modes**
+   removal of features thinner than the nozzle (0.45 mm, e.g. anti-aliasing slivers), merging of
+   specks below a minimum area, and removal of diagonal-only pixel contacts (these would otherwise
+   become non-manifold edges).
+4. **Smooth outlines** (`outline.py`): all colour borders form one shared graph on the pixel-corner
+   grid. It is smoothed as a whole, so neighbouring parts still meet exactly with no gaps or overlaps.
+   Each vertex may move at most 0.5–1.5 px, depending on the *Edges* setting. Real corners, where
+   two straight runs of at least 3 px meet, stay sharp, so text and rectangles keep their corners
+   while staircases become curves. The chains are then simplified with Douglas-Peucker.
+5. **Mesh**: the regions are assembled from those shared outlines, and the caps are triangulated
+   with GEOS constrained Delaunay. Every part is watertight.
+6. **Shape modes**
    - *Raised relief*: a backing plate (the most-used colour, any palette colour or an extra filament)
      with the other colours raised on top. They can have equal heights or be stepped. Colour changes
      happen only in the raised layers.
    - *Flat mosaic*: every colour is a full-thickness tile. Good for coasters and signs.
-6. **Export**: binary STL writer, and a Bambu Studio 3MF writer (`app/pipeline/export.py`).
+7. **Export**: binary STL writer, and a Bambu Studio 3MF writer (`app/pipeline/export.py`).
 
 ## Palette editing
 
