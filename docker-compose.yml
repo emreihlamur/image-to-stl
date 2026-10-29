@@ -1,0 +1,12 @@
+services:
+  app:
+    build: .
+    image: image-to-stl:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      - jobs:/data
+    restart: unless-stopped
+
+volumes:
+  jobs:

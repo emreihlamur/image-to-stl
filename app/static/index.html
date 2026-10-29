@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Image to 3D Print</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+    {"imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }}
+  </script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo">◆</span> Image&nbsp;→&nbsp;3D&nbsp;Print <span class="tag">Bambu Lab P2S</span></div>
+  <div class="status" id="status">Upload an image to start</div>
+</header>
+
+<main class="layout">
+  <aside class="panel" id="panel">
+    <!-- Upload -->
+    <section class="card">
+      <h2>1. Image</h2>
+      <label class="drop" id="drop">
+        <input type="file" id="file" accept="image/*" hidden>
+        <img id="thumb" alt="" hidden>
+        <span id="dropText">Drop an image here or <u>browse</u><br><small>PNG with transparency works best for shapes</small></span>
+      </label>
+    </section>
+
+    <!-- Colours -->
+    <section class="card">
+      <h2>2. Colours</h2>
+      <div class="field">
+        <label for="n_colors">Number of colours <output id="n_colors_out">4</output></label>
+        <input type="range" id="n_colors" min="1" max="16" value="4">
+        <small class="hint" id="amsHint">Fits one 4-slot AMS</small>
+      </div>
+      <div class="palette" id="palette"></div>
+      <div class="row gap">
+        <button class="btn small" id="snapBtn" disabled title="Replace each colour with the closest Bambu PLA Basic filament">Snap to Bambu PLA</button>
+        <button class="btn small ghost" id="resetPalette" hidden>Reset to auto</button>
+      </div>
+      <details class="sub">
+        <summary>Image clean-up</summary>
+        <div class="field">
+          <label for="smoothing">Smoothing <output id="smoothing_out">1</output></label>
+          <input type="range" id="smoothing" min="0" max="4" value="1">
+        </div>
+        <div class="field">
+          <label for="min_region_mm2">Remove specks smaller than <output id="min_region_mm2_out">1</output> mm²</label>
+          <input type="range" id="min_region_mm2" min="0" max="20" step="0.5" value="1">
+        </div>
+        <label class="check"><input type="checkbox" id="remove_bg"> Remove background (border colour)</label>
+        <div class="field" id="bgTolField" hidden>
+          <label for="bg_tolerance">Background tolerance <output id="bg_tolerance_out">12</output></label>
+          <input type="range" id="bg_tolerance" min="2" max="40" value="12">
+        </div>
+      </details>
+    </section>
+
+    <!-- Geometry -->
+    <section class="card">
+      <h2>3. Shape</h2>
+      <div class="seg" id="modeSeg">
+        <button data-mode="relief" class="on">Raised relief</button>
+        <button data-mode="flat">Flat mosaic</button>
+      </div>
+      <small class="hint" id="modeHint"></small>
+      <div class="grid2">
+        <div class="field"><label for="width_mm">Width (mm)</label><input type="number" id="width_mm" value="100" min="10" max="256" step="1"></div>
+        <div class="field"><label for="pixel_mm">Detail (mm)</label>
+          <select id="pixel_mm">
+            <option value="0.2">0.2 fine</option>
+            <option value="0.3" selected>0.3 normal</option>
+            <option value="0.4">0.4 nozzle</option>
+            <option value="0.6">0.6 coarse</option>
+          </select></div>
+        <div class="field"><label for="base_thickness" id="baseLabel">Base (mm)</label><input type="number" id="base_thickness" value="1.2" min="0.4" max="20" step="0.2"></div>
+        <div class="field relief-only"><label for="relief_height">Raised (mm)</label><input type="number" id="relief_height" value="0.8" min="0.2" max="20" step="0.2"></div>
+      </div>
+      <div class="relief-only">
+        <label class="check"><input type="checkbox" id="stepped"> Stepped heights (each colour higher)</label>
+        <div class="field" id="stepField" hidden><label for="step_height">Step (mm)</label><input type="number" id="step_height" value="0.4" min="0.08" max="5" step="0.04"></div>
+        <div class="field">
+          <label for="baseColor">Base colour</label>
+          <select id="baseColor"><option value="-1">Most used colour</option><option value="custom">Extra filament…</option></select>
+          <input type="color" id="baseCustom" value="#000000" hidden>
+        </div>
+        <div class="field"><label for="border_mm">Border around shape (mm)</label><input type="number" id="border_mm" value="0" min="0" max="20" step="0.5"></div>
+      </div>
+    </section>
+
+    <button class="btn primary big" id="generate" disabled>Generate</button>
+    <label class="check auto"><input type="checkbox" id="auto" checked> Auto-update when settings change</label>
+  </aside>
+
+  <section class="stage">
+    <div class="tabs">
+      <button class="tab on" data-view="3d">3D preview</button>
+      <button class="tab" data-view="2d">Colour map</button>
+      <div class="tabs-right" id="viewTools">
+        <label class="mini">Explode <input type="range" id="explode" min="0" max="20" value="0"></label>
+        <button class="btn small ghost" id="resetCam">Reset view</button>
+      </div>
+    </div>
+    <div class="view" id="view3d"><canvas id="canvas"></canvas><div class="empty" id="empty3d">Your model will appear here</div><div class="busy" id="busy" hidden><div class="spinner"></div></div></div>
+    <div class="view" id="view2d" hidden>
+      <div class="compare">
+        <figure><img id="srcImg" alt=""><figcaption>Original</figcaption></figure>
+        <figure><img id="mapImg" alt=""><figcaption>Quantised</figcaption></figure>
+      </div>
+    </div>
+
+    <div class="results" id="results" hidden>
+      <div class="stats" id="stats"></div>
+      <div class="warnings" id="warnings"></div>
+      <div class="downloads">
+        <a class="btn primary" id="dl3mf" download>⬇ Bambu 3MF (P2S, coloured)</a>
+        <a class="btn" id="dlStl" download>⬇ STL (single)</a>
+        <a class="btn" id="dlZip" download>⬇ STL per colour (.zip)</a>
+      </div>
+      <table class="parts">
+        <thead><tr><th></th><th>Part</th><th>Filament</th><th>Height</th><th>Triangles</th><th></th></tr></thead>
+        <tbody id="partsBody"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<template id="swatchTpl">
+  <div class="swatch">
+    <input type="color" class="sw-color" title="Filament colour for this region">
+    <input type="text" class="sw-name" spellcheck="false">
+    <span class="sw-pct"></span>
+    <button class="sw-del" title="Remove colour (merges into the nearest)">×</button>
+  </div>
+</template>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
