@@ -126,7 +126,7 @@ class JsonProfiles:
                 return self.by_vendor[v][name]
         raise KeyError(name)
 
-    def resolve(self, name: str, vendor: str | None = None) -> dict:
+    def resolve(self, name: str, vendor: str | None = None, includes: bool = False) -> dict:
         chain, n = [], name
         while n:
             f = self.find(n, vendor)
@@ -137,7 +137,11 @@ class JsonProfiles:
         merged: dict = {}
         for d in reversed(chain):
             merged.update(d)
+            # Bambu keeps the long G-code blocks in "template" presets listed under `include`
+            for inc in d.get("include", []) if includes else []:
+                merged.update({k: v for k, v in self.resolve(inc, vendor).items() if k not in META})
         merged.pop("inherits", None)
+        merged.pop("include", None)
         merged["name"], merged["from"] = name, "system"
         return merged
 
@@ -191,6 +195,16 @@ def pick_preset(profiles: JsonProfiles, vendor: str, kind: str, machine: str, pr
     return None
 
 
+def add_included_gcode(cfg: dict, profiles: JsonProfiles, preset: str, vendor: str) -> None:
+    """Bambu machine presets keep their start/end/layer/filament-change G-code in "template"
+    presets listed under `include`. The CLI export leaves them out, so they are added here
+    (plain strings, nothing per filament)."""
+    plain = profiles.resolve(preset, vendor)
+    for k, v in profiles.resolve(preset, vendor, includes=True).items():
+        if k.endswith("_gcode") and isinstance(v, str) and v != plain.get(k):
+            cfg[k] = v
+
+
 def build_json_printer(slicer: str, profiles: JsonProfiles, preset: str) -> tuple[dict, dict]:
     vendor = "BBL" if slicer == "bambu" else profiles.vendor_of(preset)
     machine = profiles.resolve(preset, vendor)
@@ -205,6 +219,7 @@ def build_json_printer(slicer: str, profiles: JsonProfiles, preset: str) -> tupl
     with tempfile.TemporaryDirectory() as td:
         one = export_project(slicer, Path(td), presets, 1)
         two = export_project(slicer, Path(td), presets, 2)
+    add_included_gcode(one, profiles, preset, vendor)
     per = sorted({k for k, v in one.items() if isinstance(v, list) and isinstance(two.get(k), list)
                   and len(two[k]) == 2 * len(v) and len(v) > 0}
                  | {k for k in EXTRA_PER_FILAMENT if isinstance(one.get(k), list) and len(one[k]) == 1})
@@ -318,8 +333,22 @@ def prusa_info(cfg: dict) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default="")
+    ap.add_argument("--gcode-only", action="store_true",
+                    help="only refresh the included G-code templates of the stored Bambu/Orca configs")
     args = ap.parse_args()
     only = set(filter(None, args.only.split(",")))
+    if args.gcode_only:
+        for pid, _, _, slicer, preset, _, _ in CATALOG:
+            if slicer == "prusa" or (only and pid not in only) or not (OUT / f"{pid}.json.gz").exists():
+                continue
+            profiles = JsonProfiles(APPS[slicer] / "Contents/Resources/profiles")
+            vendor = "BBL" if slicer == "bambu" else profiles.vendor_of(preset)
+            path = OUT / f"{pid}.json.gz"
+            cfg = json.loads(gzip.decompress(path.read_bytes()))
+            add_included_gcode(cfg, profiles, preset, vendor)
+            path.write_bytes(gzip.compress(json.dumps(cfg, sort_keys=True).encode(), 9))
+            print(pid, len(cfg["machine_start_gcode"]))
+        return
     OUT.mkdir(parents=True, exist_ok=True)
     cat_path = OUT / "catalog.json"
     catalog = {p["id"]: p for p in json.loads(cat_path.read_text())} if cat_path.exists() else {}

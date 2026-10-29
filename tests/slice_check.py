@@ -97,7 +97,7 @@ def slice_file(slicer: str, f: Path, out: Path, extra: list[str] = ()) -> str:
 
 
 def check(gcode: str, slicer: str) -> dict:
-    tools = sorted(set(re.findall(r"^(?:M620 S|T)(\d+)\b", gcode, re.M)) - {"255", "1000"}, key=int)
+    tools = sorted(set(re.findall(r"^(?:M620 S|T)(\d+)(?:A|\b)", gcode, re.M)) - {"255", "1000"}, key=int)
     m600 = len(re.findall(r"^(?:M600|M400 U1|PAUSE|M601|M25)\b", gcode, re.M))
     bed = re.search(r"^; (?:bed_shape|printable_area) = (.*)$", gcode, re.M)
     t = re.search(r"^; (?:estimated printing time \(normal mode\)|model printing time|total estimated time)[^=:]*[=:] ?(.*)$",
@@ -139,6 +139,9 @@ def main() -> None:
         n_fil = len({p.filament for p in parts})
         want_tools = n_fil if a.mode != "layers" else 1
         want_m600 = len(swaps)
+        if a.mode != "layers" and n_fil > pr.slots:
+            print(f"skip {pid:22s} {slicer:6s} {n_fil} filaments > {pr.slots} slot(s): the app asks for Layer swaps")
+            continue
         good = info["M600"] >= want_m600 if a.mode == "layers" else len(info["tools"]) >= want_tools
         ok &= good
         print(f"{'ok  ' if good else 'BAD '} {pid:22s} {slicer:6s} filaments={n_fil} tools={info['tools']} "
