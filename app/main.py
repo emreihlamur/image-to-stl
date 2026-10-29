@@ -15,9 +15,10 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from pipeline.colors import BAMBU_PLA_BASIC, quantize, render_preview, rgb_to_hex, snap_to_filaments
-from pipeline.export import bambu_3mf_bytes, stl_bytes
+from pipeline import printers
+from pipeline.export import Swap, prusa_3mf_bytes, project_3mf_bytes, stl_bytes
 from pipeline.mesh import Mesh
-from pipeline.model import BED_MM, ModelSettings, build_parts, center_parts
+from pipeline.model import ModelSettings, build_parts, center_parts, swap_plan
 
 DATA = Path(os.environ.get("DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
 JOBS = DATA / "jobs"
@@ -27,6 +28,15 @@ MAX_UPLOAD = 25 * 1024 * 1024
 JOB_TTL_S = 24 * 3600
 
 app = FastAPI(title="Image to 3D print")
+
+
+@app.middleware("http")
+async def revalidate_static(request, call_next):
+    """Browsers must re-check the UI files, so an update never runs against a cached old app.js."""
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "no-cache")
+    return response
 
 
 def _cleanup_old_jobs() -> None:
@@ -52,6 +62,11 @@ def _job_dir(job_id: str) -> Path:
 @app.get("/api/filaments")
 def filaments():
     return [{"name": n, "hex": h} for n, h in BAMBU_PLA_BASIC.items()]
+
+
+@app.get("/api/printers")
+def printer_list():
+    return [p.public() for p in printers.catalog().values()]
 
 
 @app.post("/api/upload")
@@ -91,6 +106,10 @@ def generate(
     colors: str = Form(""),           # JSON list of hex: output filament colour per palette entry
     names: str = Form(""),            # JSON list of display/filament names (same order as palette)
     snap_filaments: bool = Form(False),
+    printer: str = Form("bambu-p2s"),
+    bed_w: float = Form(220.0),       # "generic" printer only
+    bed_d: float = Form(220.0),
+    slots: int = Form(1),
 ):
     d = _job_dir(job_id)
     meta = json.loads((d / "meta.json").read_text())
@@ -103,7 +122,12 @@ def generate(
         raise HTTPException(400, "Backing colour must be #RRGGBB")
     if not (1 <= n_colors <= 16):
         raise HTTPException(400, "Colours must be between 1 and 16")
-    width_mm = min(max(width_mm, 10.0), BED_MM)
+    try:
+        pr = printers.get(printer, min(max(bed_w, 50), 1000), min(max(bed_d, 50), 1000),
+                          min(max(slots, 1), 16))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    width_mm = min(max(width_mm, 10.0), max(pr.size))
     pixel_mm = min(max(pixel_mm, 0.1), 2.0)
     if width_mm / pixel_mm > 2000:
         raise HTTPException(400, "Resolution too fine for this width (max 2000 px across)")
@@ -128,17 +152,24 @@ def generate(
         names_list = [f"Color {i + 1}" for i in range(len(hexes))]
 
     settings = ModelSettings(
-        mode=mode if mode in ("flat", "relief") else "relief",
+        mode=mode if mode in ("flat", "relief", "layers") else "relief",
         base_thickness=min(max(base_thickness, 0.4), 20), relief_height=min(max(relief_height, 0.2), 20),
         stepped=stepped, step_height=min(max(step_height, 0.08), 5),
         base_color_index=base_color_index, base_color_custom=base_color_custom or None,
-        border_mm=min(max(border_mm, 0), 20), edge_smoothing=min(max(edge_smoothing, 0), 3))
+        border_mm=min(max(border_mm, 0), 20), edge_smoothing=min(max(edge_smoothing, 0), 3),
+        layer_height=pr.layer_height, first_layer_height=pr.first_layer_height)
     parts = build_parts(q, hexes, names_list, settings)
     if not parts:
         raise HTTPException(400, "No printable geometry produced")
     size = center_parts(parts)
-    filament_colors = hexes + ([settings.base_color_custom] if settings.base_color_custom else [])
-    filament_names = names_list + (["Backing"] if settings.base_color_custom else [])
+    swaps = []
+    if settings.mode == "layers":
+        # one filament; the slicer pauses for each colour change
+        filament_colors, filament_names = [parts[0].color], [parts[0].name.removesuffix(" (base)")]
+        swaps = [Swap(z, layer, c, n) for z, layer, c, n in swap_plan(parts, settings)]
+    else:
+        filament_colors = hexes + ([settings.base_color_custom] if settings.base_color_custom else [])
+        filament_names = names_list + (["Backing"] if settings.base_color_custom else [])
 
     # outputs
     out = d / "out"
@@ -153,7 +184,13 @@ def generate(
                           "z0": round(p.z0, 3), "z1": round(p.z1, 3),
                           "triangles": int(len(p.mesh.faces)), "stl": f"parts/{fname}"})
     (out / f"{base}.stl").write_bytes(stl_bytes(Mesh.concat([p.mesh for p in parts]), base))
-    (out / f"{base}_P2S.3mf").write_bytes(bambu_3mf_bytes(parts, filament_colors, base))
+    files = {"stl": f"{base}.stl", "zip": f"{base}_parts.zip", "preview": "preview.png",
+             "universal": f"{base}_universal.3mf"}
+    (out / files["universal"]).write_bytes(
+        prusa_3mf_bytes(parts, filament_colors, base, printers.generic(*pr.size, pr.slots), swaps))
+    if pr.slicer != "generic":
+        files["3mf"] = f"{base}_{pr.id}.3mf"
+        (out / files["3mf"]).write_bytes(project_3mf_bytes(parts, filament_colors, base, pr, swaps))
     with zipfile.ZipFile(out / f"{base}_parts.zip", "w", zipfile.ZIP_DEFLATED) as z:
         for f in sorted((out / "parts").iterdir()):
             z.write(f, f.name)
@@ -164,11 +201,16 @@ def generate(
                      "area_pct": round(100 * float((q.labels == i).sum()) / max(total_px, 1), 1)}
                     for i, h in enumerate(hexes)]
     warnings = []
-    if size[0] > BED_MM or size[1] > BED_MM:
-        warnings.append(f"Model is {size[0]:.0f} x {size[1]:.0f} mm, larger than the P2S bed (256 x 256 mm).")
-    if len(filament_colors) > 4:
-        warnings.append(f"{len(filament_colors)} filaments: needs more than one 4-slot AMS "
-                        "(or manual filament changes).")
+    bw, bd = pr.size
+    if size[0] > bw or size[1] > bd:
+        warnings.append(f"Model is {size[0]:.0f} x {size[1]:.0f} mm, larger than the {pr.label} bed "
+                        f"({bw:.0f} x {bd:.0f} mm).")
+    used = len({p.filament for p in parts})
+    if settings.mode != "layers" and used > pr.slots:
+        how = (f"its {pr.system} holds {pr.slots}" if pr.slots > 1
+               else "it has one nozzle and no filament changer")
+        warnings.append(f"This needs {used} filaments but {how}. Switch the shape to "
+                        "'Layer swaps' to print it with manual filament changes.")
     tiny = [p["name"] for p in palette_info if 0 < p["area_pct"] < 0.5]
     if tiny:
         warnings.append("Very small colour areas: " + ", ".join(tiny) + ". Consider fewer colours.")
@@ -181,8 +223,9 @@ def generate(
         "filaments": [{"slot": i + 1, "hex": h, "name": n}
                       for i, (h, n) in enumerate(zip(filament_colors, filament_names))],
         "parts": part_info,
-        "files": {"3mf": f"{base}_P2S.3mf", "stl": f"{base}.stl", "zip": f"{base}_parts.zip",
-                  "preview": "preview.png"},
+        "printer": pr.public(),
+        "swaps": [{"z": s.z, "layer": s.layer, "hex": s.color, "name": s.name} for s in swaps],
+        "files": files,
         "warnings": warnings,
         "seconds": round(time.time() - t0, 2),
     }

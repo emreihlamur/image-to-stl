@@ -123,3 +123,9 @@ details.sub summary { cursor: pointer; color: var(--muted); font-size: 13px; mar
   .panel { border-right: 0; }
   .compare { grid-template-columns: 1fr; }
 }
+.swaps { background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+  padding: 10px 12px; font-size: 13px; margin: 8px 0; line-height: 1.6; }
+.swaps ol { margin: 6px 0 0 18px; padding: 0; }
+.swaps .dot { margin: 0 4px -1px 2px; }
+.swaps code { opacity: .7; font-size: 12px; }
+#printer { width: 100%; }
